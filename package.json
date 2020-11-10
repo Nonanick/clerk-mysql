@@ -1,0 +1,28 @@
+{
+  "name": "auria-clerk-mysql",
+  "version": "0.0.1",
+  "description": "Auria Clerk - MySQL Archive",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "Auria",
+    "Clerk",
+    "MySQL",
+    "Storage",
+    "Archive",
+    "Clerk"
+  ],
+  "dependencies": {
+    "auria-clerk": "file:..\\auria-clerk",
+    "mysql2": "^2.2.5",
+    "nanoid": "^3.1.16",
+    "tslib": "^2.0.3"
+  },
+  "author": "Nicholas Frai",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^14.14.7"
+  }
+}

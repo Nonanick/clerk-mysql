@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    /* Basic Options */
+    "incremental": true,
+    "target": "es6",
+    "module": "commonjs",
+    "lib": [
+      "ESNext"
+    ],
+    "declaration": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "importHelpers": true,
+    /* Strict Type-Checking Options */
+    "strict": true,
+    "moduleResolution": "node",
+    "baseUrl": "./src",
+    "esModuleInterop": true,
+    /* Experimental Options */
+    "experimentalDecorators": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}
