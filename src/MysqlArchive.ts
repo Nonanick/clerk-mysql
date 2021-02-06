@@ -1,63 +1,19 @@
-import {
-  IArchive,
-  MaybePromise,
-  Procedure,
-  QueryRequest,
-  FilterComparison,
-  ComparableValues,
-  implementsFilterComparison,
-  IFilterQuery
-} from 'auria-clerk';
-import { PropertyComparison } from 'auria-clerk/dist/property/comparison/PropertyComparison';
-
-import { QueryResponse } from 'auria-clerk/dist/query/QueryResponse';
+import { Archive, ComparableValues, IOrderBy, MaybePromise, QueryRequest, QueryResponse } from 'clerk';
 import { MysqlConnectionInfo } from 'connection/MysqlConnectionInfo';
 import { createPool, Pool } from 'mysql2/promise';
-import { customAlphabet } from 'nanoid';
 import { MysqlArchiveTransaction } from 'transaction/MysqlArchiveTransaction';
+import { QueryParser } from './query/QueryParser';
 
-export class MysqlArchive implements IArchive {
+
+export class MysqlArchive extends Archive {
 
   protected _connectionInfo: MysqlConnectionInfo;
 
   protected _mysqlConn?: Pool;
 
-  protected _paramNameGenerator = customAlphabet('abcdefghijklmnopqrstuvwxyz', 10);
-
-  protected _modelProcedures: {
-    [name: string]: Procedure.OfModel.IProcedure;
-  } = {};
-
-  protected _entityProcedures: {
-    [name: string]: Procedure.OfEntity.IProcedure;
-  } = {};
-
   constructor(connectionInfo: MysqlConnectionInfo) {
+    super();
     this._connectionInfo = connectionInfo;
-  }
-
-  addModelProcedure(
-    name: string,
-    procedure: Procedure.OfModel.IProcedure
-  ): void {
-    let modifiedProcedure: Procedure.OfModel.IProcedure = {
-      name: procedure.name,
-      execute: procedure.execute.bind(this)
-    };
-
-    this._modelProcedures[name] = modifiedProcedure;
-  }
-
-  addEntityProcedure(
-    name: string,
-    procedure: Procedure.OfEntity.IProcedure
-  ): void {
-    let modifiedProcedure: Procedure.OfEntity.IProcedure = {
-      name: procedure.name,
-      execute: procedure.execute.bind(this)
-    };
-
-    this._entityProcedures[name] = modifiedProcedure;
   }
 
   async connect() {
@@ -75,17 +31,15 @@ export class MysqlArchive implements IArchive {
 
   }
 
-  async query(request: QueryRequest): MaybePromise<QueryResponse> {
-    let sql = this.requestToSQL(request);
+  async query<T = any>(request: QueryRequest<T>): MaybePromise<QueryResponse<T>> {
+
+    let parser = new QueryParser(request);
+
+    let sql = parser.parse();
+
+    //this.requestToSQL(request);
 
     let conn = await this.connection();
-
-    console.log(
-      'Will now run query',
-      sql.query,
-      'with params',
-      sql.params
-    );
 
     let response = new QueryResponse(request);
 
@@ -95,7 +49,14 @@ export class MysqlArchive implements IArchive {
         sql.params
       );
       if (Array.isArray(values[0])) {
+        let rows: any[] = values[0];
+
+        if (request.hasIncludes()) {
+          rows = this.arrangeIncludedProperties(request, rows);
+          rows = await this.fetchChildRows(request, rows);
+        }
         response.addRows(...values[0]);
+
       }
     } catch (err) {
       response.addErrors(err);
@@ -104,271 +65,118 @@ export class MysqlArchive implements IArchive {
 
   }
 
-  requestToSQL(request: QueryRequest): GeneratedQuerySQL {
+  protected arrangeIncludedProperties(request: QueryRequest<any>, values: any[]) {
 
-    let builtSQL: string = `SELECT `;
-    let params: {
-      [name: string]: ComparableValues;
-    } = {};
+    for (let includedProp of request.includes) {
 
-    let entityName = request.source;
-
-    // Properties specified ?
-    if (request.properties.length > 0) {
-
-      builtSQL += request.properties
-        .map(p => `\`${entityName}\`.\`${p}\``)
-        .join(' , ');
-
-    }
-    // by default, only fetch non-private properties
-    else {
-      let allProps: string[] = [];
-      for (let prop in request.entity.properties) {
-        let p = request.entity.properties[prop];
-        if (p.isPrivate() !== true) {
-          allProps.push(prop);
-        }
+      let relation = request.entity.properties[includedProp]?.getRelation();
+      if (relation!.type !== 'one-to-one' && relation!.type !== 'many-to-one') {
+        continue;
       }
-      // if no property exists use '*'
-      builtSQL += allProps.length === 0
-        ? '*'
-        : allProps
-          .map(p => `\`${entityName}\`.\`${p}\``)
-          .join(',');
+
+      let baseName = `related_to_${includedProp}_`;
+      let newValues = values.map(row => {
+        let newRow = { ...row };
+
+        for (let rowPropertyName in row) {
+          if (rowPropertyName.indexOf(baseName) === 0) {
+
+            let newName = rowPropertyName.replace(baseName, '');
+            let value = row[rowPropertyName];
+            delete newRow[rowPropertyName];
+
+            if (typeof newRow[includedProp] !== 'object') {
+              newRow[includedProp] = {};
+            }
+
+            newRow[includedProp][newName] = value;
+          }
+        }
+
+        return newRow;
+      });
+
+      values = newValues;
     }
+    return values;
+  }
 
-    // Source
-    builtSQL += ` FROM \`${entityName}\` `;
+  protected async fetchChildRows(request: QueryRequest<any>, values: any[]) {
 
-    // Filters ?
-    if (request.hasFilter()) {
+    for (let includedProp of request.includes) {
 
-      let filters: string[] = [];
+      let relation = request.entity.properties[includedProp]?.getRelation();
+      if (relation == null) {
+        continue;
+      }
 
-      for (let filterName in request.filters) {
-        let filter = request.filters[filterName]!;
-        let partialFilter = this.sqlFromFilter(filter, params);
-        if (Array.isArray(partialFilter)) {
-          filters.push(...partialFilter);
+      // Fetch child rows applies only for many-to-one relations
+      if (relation.type !== 'many-to-one') {
+        continue;
+      }
+
+      let store = request.entity.store();
+      let childRequest = new QueryRequest(store.entity(relation.entity.name)!);
+      let ordering: IOrderBy[] = [
+        {
+          property: relation?.property!,
+          direction: 'asc'
+        }
+      ];
+
+      if (relation.order != null) {
+        if (Array.isArray(relation.order)) {
+          ordering.push(...relation.order);
         } else {
-          filters.push(partialFilter);
+          ordering.push(relation.order);
         }
       }
-      let filterString = filters.map(f => `(${f})`).join(' AND ');
 
-      if (filterString.length > 0) {
-        builtSQL += ` WHERE ${filterString} `;
+      // Query for children whose parent was queried in the main query
+      childRequest.loadQueryRequest({
+        properties: relation?.returning,
+        order: ordering,
+        filters: {
+          ...relation?.filters ?? {},
+          'included-in-previous': [relation?.property!, 'included in', values.map(m => {
+            return m[includedProp];
+          })]
+        },
+      });
+
+      const childRows = await childRequest.fetch();
+      if (childRows instanceof Error || childRows == null) {
+        console.error('Failed to fetch associated child of property ', includedProp);
+        return values;
       }
-    }
 
-    // Order By
-    if (request.hasOrder()) {
-      let orderSQL: string[] = [];
-      for (let order of request.ordering) {
-        orderSQL.push(
-          order.property
-          + (order.direction === 'desc' ? 'DESC' : '')
-        );
-      }
+      const placeInRowAt: {
+        [index: number]: any;
+      } = {};
 
-      if (orderSQL.length > 0) {
-        builtSQL += ' ORDER BY ' + orderSQL.join(' , ');
-      }
-    }
+      // Associate children to parent index
+      for (let index = 0; index <= childRows.length; index++) {
+        let child = childRows[index];
+        for (let row of values) {
 
-    // Limiter + pagination ?
-    if (request.hasLimiter()) {
-      builtSQL += ` LIMIT ${request.limit.amount}`;
-      builtSQL += request.limit.offset != null ? ' OFFSET ' + request.limit.offset : '';
-    }
+          if (child[relation.property] === row[includedProp]) {
+            // Initialize array
+            if (!Array.isArray(placeInRowAt[index])) placeInRowAt[index] = [];
 
-    let parsedQuery = this.parseNamedAttributes(builtSQL, params);
-    return parsedQuery;
-
-  }
-
-  parseNamedAttributes(query: string, namedParams: { [name: string]: ComparableValues; }): GeneratedQuerySQL {
-    let matches = query.match(/:\[.*?\]/g);
-    if (matches != null) {
-      let params: ComparableValues[] = [];
-      for (let p of matches) {
-        let paramName = p.slice(2, -1);
-        query = query.replace(p, '?');
-        params.push(namedParams[paramName]);
-      }
-      return {
-        query,
-        params
-      };
-    } else {
-      return {
-        query,
-        params: []
-      };
-    }
-  }
-
-  sqlFromFilter(
-    filter: FilterComparison[],
-    params: { [name: string]: ComparableValues; }
-  ): string[];
-  sqlFromFilter(
-    filter: IFilterQuery | FilterComparison,
-    params: { [name: string]: ComparableValues; }
-  ): string;
-  sqlFromFilter(
-    filter: IFilterQuery | FilterComparison | FilterComparison[],
-    params: { [name: string]: ComparableValues; }
-  ): string | string[];
-  sqlFromFilter(
-    filter: IFilterQuery | FilterComparison | FilterComparison[],
-    params: { [name: string]: ComparableValues; }
-  ): string | string[] {
-
-    // Handle array of FilterComparison
-    if (Array.isArray(filter)) {
-      return filter
-        .map(f => this.sqlFromFilter(f, params));
-    }
-
-    // Handle FilterComparison
-    if (implementsFilterComparison(filter)) {
-
-      // random name -> make it hard to colide parameters names
-      //let paramName = this._paramNameGenerator();
-
-      let nonce = 0;
-
-      // Instead of a random param name use source + property so the connection can cache the query
-      let paramName = `${filter.source != null ? String(filter.source) : ''}${filter.property}`;
-      while (params[paramName + nonce] != null) {
-        nonce++;
-      }
-      // nonce will make sure that we avoid colisions of the same property from the same source
-      // being compared more than once
-
-      // Add parameter value to global parameter map
-      params[paramName + nonce] = filter.value;
-
-      return (
-
-        filter.source != null
-          // Source
-          ? '`' + filter.source + '`.'
-          : ''
-
-          // Property name
-          + ' `' + filter.property + '` '
-
-          // Comparator
-          + this.resolveComparison(filter.comparison)
-
-          // Value placeholder
-          + ` :[${paramName + nonce}] `
-      );
-    }
-
-    // Handle IFilterQuery
-    let filters: string[] = [];
-
-    for (let name in filter) {
-
-      let f = filter[name]!;
-      let filtered: string | string[] = this.sqlFromFilter(f, params);
-
-      if (name === '$or') {
-        filters.push(
-          (filtered as string[])
-            .map(f => `(${f})`)
-            .join(' OR ')
-        );
-      } else if (name === '$not') {
-        filters.push(
-          ' NOT (' +
-          (filtered as string[])
-            .map(f => `(${f})`)
-            .join(' AND ')
-          + ') '
-        );
-      } else {
-        if (Array.isArray(filtered)) {
-          filters.push(
-            (filtered as string[])
-              .map(f => `(${f})`)
-              .join(' AND ')
-          );
-        } else {
-          filters.push(filtered);
+            placeInRowAt[index].push(row);
+            // Found its parent? stop!
+            break;
+          }
         }
       }
+
+      for (let index in placeInRowAt) {
+        values[index][includedProp] = placeInRowAt[index];
+      }
+
     }
 
-    return filters.map(f => `${f}`).join(' AND ');
-
-  }
-
-  resolveComparison(comparison: PropertyComparison): string {
-    switch (comparison) {
-      // equal
-      case 'equal':
-      case 'eq':
-      case '=':
-      case '==':
-        return '=';
-      // not equal
-      case 'neq':
-      case 'not equal':
-      case '<>':
-      case '!=':
-        return '!=';
-
-      // like
-      case 'like':
-      case '=~':
-        return ' LIKE ';
-
-      // not like
-      case 'not like':
-      case '!=~':
-        return ' NOT LIKE ';
-
-      // lesser than
-      case '<':
-      case 'lt':
-      case 'lesser than':
-        return '<';
-
-      // greater than
-      case '>':
-      case 'gt':
-      case 'greater than':
-        return '>';
-
-      // lesser than or equal to
-      case '<=':
-      case 'lte':
-      case 'lesser than or equal to':
-        return '<=';
-
-      // greater than or equal to
-      case '>=':
-      case 'gte':
-      case 'greater than or equal to':
-        return '>=';
-
-      // included
-      case 'in':
-      case 'included in':
-      case 'contained in':
-        return ' IN ';
-
-      // not included
-      case 'not in':
-      case 'not included in':
-      case 'not contained in':
-        return ' NOT IN';
-    }
+    return values;
   }
 
   transaction(): MysqlArchiveTransaction {

@@ -1,4 +1,4 @@
-import { AppException, ComparableValues, MaybePromise } from 'auria-clerk';
+import { AppException, ComparableValues, MaybePromise } from 'clerk';
 import { PoolConnection } from 'mysql2/promise';
 import { MysqlArchive } from '../MysqlArchive';
 

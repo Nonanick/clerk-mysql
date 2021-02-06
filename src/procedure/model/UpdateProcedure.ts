@@ -1,13 +1,11 @@
-import { Procedure, ComparableValues, AppError } from 'auria-clerk';
+import { ComparableValues, AppError, IModelProcedure, IProcedureResponse } from 'clerk';
 import { MysqlArchive } from "../../MysqlArchive";
-import { IMysqlModelProcedureResponse } from './IMysqlModelProcedureResponse';
 
-export const UpdateProcedure: Procedure.OfModel.IProcedure<
-  Procedure.OfModel.IContext,
-  IMysqlModelProcedureResponse
+export const UpdateProcedure: IModelProcedure<
+  IProcedureResponse
 > = {
   name: 'update',
-  async execute(archive, request) {
+  execute: async (archive, request) => {
 
     if (!(archive instanceof MysqlArchive)) {
       return new Error('Create procedure expects an MysqlArchive!');
@@ -54,6 +52,12 @@ export const UpdateProcedure: Procedure.OfModel.IProcedure<
     // Add to parameters
     propertyValues.push(await model.$id());
 
+    let response: Partial<IProcedureResponse> = {
+      model: request.model,
+      procedure: request.procedure,
+      request: request,
+    };
+
     try {
 
       let queryResponse = await archive.execute(
@@ -66,22 +70,20 @@ export const UpdateProcedure: Procedure.OfModel.IProcedure<
       );
 
       return {
-        request,
-        model: request.model,
+        ...response,
         success: true,
         sql: updateSQL,
         bindParams: propertyValues
-      };
+      } as IProcedureResponse;
 
     } catch (err) {
-      console.error('FAILED to update model using SQL query ',);
+      console.error('FAILED to update model using SQL query ', err);
       return {
-        request,
-        model: request.model,
+        ...response,
         success: false,
         sql: updateSQL,
         bindParams: propertyValues
-      };
+      } as IProcedureResponse;
     }
 
   }

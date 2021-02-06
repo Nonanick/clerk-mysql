@@ -1,16 +1,18 @@
 import {
   IFilterQuery,
-  Procedure,
   MaybePromise,
-  ComparableValues
-} from 'auria-clerk';
+  ComparableValues,
+  IEntityProcedure,
+  IEntityProcedureContext,
+  IEntityProcedureResponse
+} from 'clerk';
 import { ResultSetHeader } from 'mysql2';
 import { MysqlArchive } from '../../MysqlArchive';
-import { IMysqlEntityProcedureResponse } from './IMysqlEntityProcedureResponse';
+import { FilterParser } from '../../query/FilterParser';
 
-export const BatchUpdate: Procedure.OfEntity.IProcedure<BatchUpdateContext> = {
+export const BatchUpdate: IEntityProcedure = {
   name: 'batch-update',
-  async execute(archive, request) {
+  execute: async (archive, request) => {
 
     if (!(archive instanceof MysqlArchive)) {
       return new Error('Batch Update expects an MySQL archive!');
@@ -28,32 +30,37 @@ export const BatchUpdate: Procedure.OfEntity.IProcedure<BatchUpdateContext> = {
     updateSQL += ' SET ' + updateProperties.join(' , ');
 
     let whereParams: { [name: string]: ComparableValues; } = {};
-    let whereQuery = archive.sqlFromFilter(request.context.filter, whereParams);
-    let parsedWhere = archive.parseNamedAttributes(whereQuery, whereParams);
+    let parsedFilter = FilterParser.ParseAll(request.context.filter, whereParams);
+    let parsedWhere = FilterParser.ParseNamedAttributes(parsedFilter, whereParams);
+
     updateSQL += ' WHERE ' + parsedWhere.query;
+
     bindParams.push(...parsedWhere.params);
 
     let batchUpdateResponse = await archive.execute(updateSQL, bindParams);
 
     let result: ResultSetHeader = batchUpdateResponse[0] as ResultSetHeader;
 
-    return {
+    let response: IEntityProcedureResponse = {
+      procedure: 'batch-update',
+      request: request,
+      success: result.affectedRows > 0,
       bindedParams: bindParams,
       sql: updateSQL,
-      success: result.affectedRows > 0,
-      request: request,
     };
+
+    return response;
   }
 };
 
 
-export interface BatchUpdateContext extends Procedure.OfEntity.IContext {
+export interface BatchUpdateContext extends IEntityProcedureContext {
   values: any;
   filter: IFilterQuery;
 };
 
-declare module 'auria-clerk' {
+declare module 'clerk' {
   interface Entity {
-    execute(procedure: 'batch-update', context: BatchUpdateContext): MaybePromise<IMysqlEntityProcedureResponse>;
+    execute(procedure: 'batch-update', context: BatchUpdateContext): MaybePromise<IEntityProcedureResponse>;
   }
 }

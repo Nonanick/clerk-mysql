@@ -1,13 +1,11 @@
-import { Procedure } from 'auria-clerk';
+import { IModelProcedure, IProcedureResponse } from 'clerk';
 import { MysqlArchive } from "../../MysqlArchive";
-import { IMysqlModelProcedureResponse } from './IMysqlModelProcedureResponse';
 
-export const DeleteProcedure: Procedure.OfModel.IProcedure<
-  Procedure.OfModel.IContext,
-  IMysqlModelProcedureResponse
+export const DeleteProcedure: IModelProcedure<
+  IProcedureResponse
 > = {
   name: 'delete',
-  async execute(archive, request) {
+  execute: async (archive, request) => {
 
     if (!(archive instanceof MysqlArchive)) {
       return new Error('Create procedure expects an MysqlArchive!');
@@ -25,7 +23,10 @@ export const DeleteProcedure: Procedure.OfModel.IProcedure<
         [await model.$id()]
       );
 
+      console.log('MySQL DELETE response', queryResponse);
+
       return {
+        procedure: 'delete',
         request,
         model: request.model,
         success: true,
@@ -36,6 +37,7 @@ export const DeleteProcedure: Procedure.OfModel.IProcedure<
     } catch (err) {
       console.error('FAILED to delete model using SQL query ', deleteSQL);
       return {
+        procedure: 'delete',
         request,
         model: request.model,
         success: false,
