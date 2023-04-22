@@ -15,7 +15,7 @@
   ],
   "dependencies": {
     "mysql2": "^2.2.5",
-    "nanoid": "^3.1.16",
+    "nanoid": "^3.1.31",
     "tslib": "^2.0.3"
   },
   "author": "Nicholas Frai",
